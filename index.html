@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#10131a" />
+  <title>Python Flow Lab</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">Py</div>
+        <div>
+          <h1>Python Flow Lab</h1>
+          <p>Смотри, как данные проходят через код</p>
+        </div>
+      </div>
+      <div class="status-group">
+        <span id="engineStatus" class="status-pill loading"><span class="status-dot"></span>Загрузка Python…</span>
+        <button id="helpBtn" class="icon-btn" title="Что поддерживается">?</button>
+      </div>
+    </header>
+
+    <section class="toolbar" aria-label="Управление выполнением">
+      <div class="toolbar-group primary-actions">
+        <button id="runBtn" class="btn btn-primary" disabled>▶ Запуск</button>
+        <button id="stepBtn" class="btn" disabled>Шаг →</button>
+        <button id="pauseBtn" class="btn" disabled>Ⅱ Пауза</button>
+        <button id="resetBtn" class="btn" disabled>↺ Сброс</button>
+      </div>
+      <div class="toolbar-group jump-group">
+        <label for="jumpLine">До строки</label>
+        <input id="jumpLine" type="number" min="1" value="1" />
+        <button id="jumpBtn" class="btn" disabled>Перейти</button>
+      </div>
+      <div class="toolbar-group speed-group">
+        <label for="speedRange">Скорость</label>
+        <input id="speedRange" type="range" min="120" max="1400" step="80" value="640" />
+        <span id="speedLabel">0.6 с</span>
+      </div>
+    </section>
+
+    <main class="workspace">
+      <section class="panel editor-panel">
+        <div class="panel-header">
+          <div>
+            <span class="eyebrow">КОД</span>
+            <strong>Редактор</strong>
+          </div>
+          <span id="parseBadge" class="mini-badge">AST не собран</span>
+        </div>
+        <div id="editor" aria-label="Редактор Python"></div>
+      </section>
+
+      <section class="panel visualization-panel">
+        <div class="panel-header">
+          <div>
+            <span class="eyebrow">ВИЗУАЛИЗАЦИЯ</span>
+            <strong>Поток выполнения</strong>
+          </div>
+          <div class="legend">
+            <span><i class="legend-dot code"></i>код</span>
+            <span><i class="legend-dot data"></i>данные</span>
+            <span><i class="legend-dot active"></i>сейчас</span>
+          </div>
+        </div>
+        <div id="graphScroll" class="graph-scroll">
+          <div id="graphStage" class="graph-stage">
+            <svg id="edgeLayer" class="edge-layer" aria-hidden="true"></svg>
+            <div id="nodesLayer" class="nodes-layer"></div>
+            <div id="tokensLayer" class="tokens-layer" aria-hidden="true"></div>
+            <div id="emptyGraph" class="empty-state">
+              <div class="empty-icon">⌘</div>
+              <strong>Ноды появятся до запуска</strong>
+              <p>Измени код — схема автоматически перестроится.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <section class="console-panel">
+      <div class="console-header">
+        <div>
+          <span class="eyebrow">КОНСОЛЬ</span>
+          <strong>print() / input()</strong>
+        </div>
+        <button id="clearConsoleBtn" class="text-btn">Очистить</button>
+      </div>
+      <div id="consoleOutput" class="console-output" aria-live="polite">
+        <div class="console-system">Готовим среду выполнения…</div>
+      </div>
+      <form id="inputForm" class="console-input-row hidden">
+        <span id="inputPrompt" class="console-prompt">Введите значение:</span>
+        <input id="inputField" autocomplete="off" />
+        <button class="btn btn-primary" type="submit">Отправить</button>
+      </form>
+    </section>
+  </div>
+
+  <aside id="inspector" class="inspector" aria-hidden="true">
+    <button id="closeInspector" class="inspector-close" aria-label="Закрыть">×</button>
+    <div class="inspector-kicker">ДЕТАЛИ НОДЫ</div>
+    <h2 id="inspectorTitle">Строка</h2>
+    <pre id="inspectorCode"></pre>
+    <div class="inspector-section">
+      <h3>Последнее состояние</h3>
+      <div id="inspectorState" class="kv-list muted">Нода ещё не выполнялась.</div>
+    </div>
+    <div class="inspector-section">
+      <h3>История</h3>
+      <div id="inspectorHistory" class="history-list muted">Пока пусто.</div>
+    </div>
+  </aside>
+
+  <dialog id="helpDialog" class="help-dialog">
+    <form method="dialog"><button class="dialog-close" aria-label="Закрыть">×</button></form>
+    <h2>Учебное подмножество Python</h2>
+    <p>Проект намеренно ограничен темами, которые обычно нужны на первых занятиях.</p>
+    <div class="help-grid">
+      <div><strong>Поддерживается</strong><p>Переменные, арифметика, списки и словари, if/else, while, for, range(), функции, аргументы, return, print(), input(), len(), int(), float(), str(), bool(), min(), max(), abs(), append().</p></div>
+      <div><strong>Не поддерживается</strong><p>import, классы, comprehensions, исключения, файлы, async/await и сторонние библиотеки.</p></div>
+    </div>
+  </dialog>
+
+  <script src="https://cdn.jsdelivr.net/npm/ace-builds@1.44.0/src-min-noconflict/ace.js"></script>
+  <script src="https://cdn.jsdelivr.net/pyodide/v314.0.6/full/pyodide.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
