@@ -36,7 +36,7 @@ function restoreLayout(positions) {
 function saveProject() {
   clearTimeout(saveTimer);
   try {
-    const project = { source: editor.getValue(), positions: snapshotLayout() };
+    const project = { source: editor.getValue(), positions: snapshotLayout(), layoutVersion: 2 };
     localStorage.setItem(projectKey, JSON.stringify(project));
     $('#saveStatus').textContent = 'Сохранено в браузере';
   } catch { $('#saveStatus').textContent = 'Скачайте код для сохранения'; }
@@ -83,7 +83,17 @@ function graphRebuilt(previous = new Map()) {
   graphSelection.clear();
   layoutUndo.length = layoutRedo.length = 0;
   if (savedProject?.source === editor.getValue() && Array.isArray(savedProject.positions)) {
-    restoreLayout(savedProject.positions.filter(item => Array.isArray(item) && item.length === 2));
+    const positions = savedProject.positions.filter(item => Array.isArray(item) && item.length === 2);
+    // Migrate only the old automatic column; keep hand-arranged projects intact.
+    let oldY = 32;
+    const oldPositions = new Map(positions);
+    const legacyDefault = !savedProject.layoutVersion && positions.length === nodeLayout.size && (parsed?.nodes ?? []).every(node => {
+      const position = oldPositions.get(node.id);
+      const matches = position?.x === 42 + node.depth * 350 && position?.y === oldY;
+      oldY += nodeLayout.get(node.id).height + 54;
+      return matches;
+    });
+    if (!legacyDefault) restoreLayout(positions);
     savedProject = null;
   } else if (previous.size) restoreLayout([...previous]);
   updateGraphTools();
@@ -217,11 +227,11 @@ $('#redoLayoutBtn').onclick = () => undoLayout(true);
 $('#alignNodes').onchange = event => { alignSelection(event.target.value); event.target.value = ''; };
 $('#layoutBtn').onclick = () => {
   const before = snapshotLayout();
-  let y = 32;
+  let x = 42;
   for (const node of parsed?.nodes ?? []) {
     const box = nodeLayout.get(node.id);
-    box.x = 42 + node.depth * 350; box.y = y;
-    y += box.height + 54;
+    box.x = x; box.y = 96;
+    x += box.width + 160;
   }
   paintLayout(); commitLayout(before); fitGraph();
 };

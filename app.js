@@ -595,14 +595,10 @@ function renderGraph(data) {
   }
   ui.emptyGraph.classList.add('hidden');
 
-  const xStep = 350;
-  const rowGap = 54;
-  let maxDepth = 0;
-  let nextY = 32;
-  data.nodes.forEach((node, index) => {
-    maxDepth = Math.max(maxDepth, node.depth);
-    const x = 42 + node.depth * xStep;
-    const y = nextY;
+  let nextX = 42;
+  data.nodes.forEach((node) => {
+    const x = nextX;
+    const y = 96;
 
     const el = document.createElement('article');
     el.className = `code-node kind-${node.kind}`;
@@ -637,7 +633,7 @@ function renderGraph(data) {
     const width = el.offsetWidth;
     const height = el.offsetHeight;
     nodeLayout.set(node.id, { x, y, width, height });
-    nextY += height + rowGap;
+    nextX += width + 160;
     installNodeDrag(el, node.id);
   });
 
@@ -660,7 +656,7 @@ function renderGraph(data) {
       el.append(port);
     });
   });
-  updateGraphBounds(Math.max(720, 42 + maxDepth * xStep + 390), Math.max(560, nextY + 50));
+  updateGraphBounds();
   drawEdges(staticEdges);
   if (typeof graphRebuilt === 'function') graphRebuilt(previousPositions);
 }
@@ -685,18 +681,36 @@ function drawEdges(edges) {
   const defs = document.createElementNS(ns, 'defs');
   defs.innerHTML = '<marker id="edgeArrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L8 4L0 8z" class="edge-arrow"/></marker>';
   ui.edgeLayer.append(defs);
+  // Read actual socket centers and convert viewport coordinates into SVG space.
+  // This also accounts for CSS zoom, scrolling and labels of different widths.
+  const inverse = ui.edgeLayer.getScreenCTM()?.inverse();
+  if (!inverse) return;
+  const ports = new Map();
+  nodeElements.forEach((el, id) => {
+    const points = new Map();
+    el.querySelectorAll('.node-port').forEach(port => {
+      const rect = port.querySelector('i').getBoundingClientRect();
+      const point = new DOMPoint(rect.left + rect.width / 2, rect.top + rect.height / 2).matrixTransform(inverse);
+      points.set(port.classList.contains('input-port') ? 'input' : port.dataset.port, point);
+    });
+    ports.set(id, points);
+  });
   for (const edge of edges) {
     const a = nodeLayout.get(edge.from), b = nodeLayout.get(edge.to);
     if (!a || !b) continue;
-    const siblings = edges.filter((item) => item.from === edge.from);
-    const portIndex = Math.max(0, siblings.findIndex((item) => item.id === edge.id));
-    const sx = a.x + a.width, sy = a.y + a.height * ((portIndex + 1) / (siblings.length + 1));
-    const tx = b.x, ty = b.y + b.height / 2;
+    const source = ports.get(edge.from)?.get(edge.label);
+    const target = ports.get(edge.to)?.get('input');
+    if (!source || !target) continue;
+    const { x: sx, y: sy } = source;
+    const { x: tx, y: ty } = target;
     const dx = tx - sx;
     const offset = Math.min(220, Math.max(42, Math.abs(dx) * .5));
     const c1x = sx + offset;
-    const c2x = dx >= 0 ? tx - offset : tx + offset;
-    const d = `M ${sx} ${sy} C ${c1x} ${sy}, ${c2x} ${ty}, ${tx} ${ty}`;
+    const c2x = tx - offset;
+    const returnY = Math.max(12, Math.min(a.y, b.y) - 40);
+    const d = dx > 0
+      ? `M ${sx} ${sy} C ${c1x} ${sy}, ${c2x} ${ty}, ${tx} ${ty}`
+      : `M ${sx} ${sy} C ${c1x} ${sy}, ${c1x} ${returnY}, ${sx} ${returnY} L ${tx} ${returnY} C ${c2x} ${returnY}, ${c2x} ${ty}, ${tx} ${ty}`;
     const hit = document.createElementNS(ns, 'path');
     hit.setAttribute('d', d);
     hit.setAttribute('class', 'flow-edge-hit');
@@ -841,6 +855,8 @@ function findEdge(fromId, toId, label = null, createDataEdge = false) {
       port.style.setProperty('--port-y', '50%');
       port.innerHTML = '<span>Value</span><i></i>';
       source.append(port);
+      const outputs = source.querySelectorAll('.output-port');
+      outputs.forEach((output, index) => output.style.setProperty('--port-y', `${(index + 1) / (outputs.length + 1) * 100}%`));
     }
     drawEdges(staticEdges);
   }

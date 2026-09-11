@@ -55,6 +55,12 @@ test('search, navigation, shortcuts and responsive workspace', async ({ page }) 
 
 test('group alignment, distribution, undo, redo and persistence', async ({ page }) => {
   await setCode(page, simple);
+  await page.evaluate(() => {
+    selectGraphNode([...nodeLayout.keys()][1]);
+    const before = snapshotLayout();
+    moveGraphSelection(before, 45, 80);
+    commitLayout(before);
+  });
   await page.locator('#graphScroll').focus();
   await page.keyboard.press('Control+a');
   await expect(page.locator('.selected-node')).toHaveCount(3);
@@ -128,4 +134,65 @@ test('Python file import and download', async ({ page }) => {
   const download = await downloadEvent;
   expect(download.suggestedFilename()).toBe('program.py');
   expect(readFileSync(await download.path(), 'utf8')).toBe(simple);
+});
+
+test('horizontal default, legacy layout migration and port-anchored edges at any zoom', async ({ page }) => {
+  const boxes = await page.evaluate(() => [...nodeLayout.values()]);
+  expect(new Set(boxes.map(b => b.y)).size).toBe(1);
+  for (let i = 1; i < boxes.length; i++) expect(boxes[i].x - boxes[i - 1].x - boxes[i - 1].width).toBe(160);
+
+  // Simulate a saved project from the previous default layout.
+  await page.evaluate(() => {
+    let y = 32;
+    for (const node of parsed.nodes) {
+      const box = nodeLayout.get(node.id);
+      box.x = 42 + node.depth * 350; box.y = y; y += box.height + 54;
+    }
+    paintLayout(); saveProject();
+  });
+  await page.reload();
+  await expect(page.locator('.code-node')).toHaveCount(13);
+  // Version 2 preserves even a deliberately arranged vertical layout.
+  expect(await page.evaluate(() => new Set([...nodeLayout.values()].map(b => b.y)).size)).toBeGreaterThan(1);
+  await page.evaluate(() => {
+    const project = JSON.parse(localStorage.getItem(projectKey));
+    delete project.layoutVersion;
+    localStorage.setItem(projectKey, JSON.stringify(project));
+    window.removeEventListener('pagehide', saveProject);
+  });
+  await page.reload();
+  await expect(page.locator('.code-node')).toHaveCount(13);
+  expect(await page.evaluate(() => new Set([...nodeLayout.values()].map(b => b.y)).size)).toBe(1);
+
+  for (const zoom of [1, .5, 1.5]) {
+    const measurements = await page.evaluate(zoom => {
+      setGraphZoom(zoom);
+      const ids = [...nodeLayout.keys()];
+      findEdge(ids[0], ids[2], null, true);
+      findEdge(ids[0], ids[3], null, true);
+      selectGraphNode(ids[1]);
+      moveGraphSelection(snapshotLayout(), 15, 25);
+      ui.graphScroll.scrollLeft = 140;
+      ui.graphScroll.scrollTop = 30;
+      drawEdges(staticEdges);
+      return staticEdges.map(edge => {
+        const path = edgePaths.get(edge.id);
+        const output = [...nodeElements.get(edge.from).querySelectorAll('.output-port')].find(p => p.dataset.port === edge.label).querySelector('i');
+        const input = nodeElements.get(edge.to).querySelector('.input-port i');
+        const start = path.getPointAtLength(0).matrixTransform(path.getScreenCTM());
+        const end = path.getPointAtLength(path.getTotalLength()).matrixTransform(path.getScreenCTM());
+        const a = output.getBoundingClientRect(), b = input.getBoundingClientRect();
+        return { startError: Math.hypot(start.x - a.left - a.width / 2, start.y - a.top - a.height / 2),
+          endError: Math.hypot(end.x - b.left - b.width / 2, end.y - b.top - b.height / 2) };
+      });
+    }, zoom);
+    expect(measurements.length).toBeGreaterThan(10);
+    for (const measure of measurements) {
+      expect(measure.startError).toBeLessThan(.8);
+      expect(measure.endError).toBeLessThan(.8);
+    }
+  }
+  await page.locator('#layoutBtn').click();
+  const restored = await page.evaluate(() => [...nodeLayout.values()]);
+  for (let i = 1; i < restored.length; i++) expect(restored[i].x - restored[i - 1].x - restored[i - 1].width).toBe(160);
 });
