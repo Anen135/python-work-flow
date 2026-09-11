@@ -1,6 +1,6 @@
 {
   "name": "python-work-flow",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "scripts": {
     "start": "python -m http.server 8000",
