@@ -272,7 +272,7 @@ class MiniPythonRuntime {
         case 'Return': {
           const value = stmt.value ? (yield* this.evalExpr(stmt.value, env, stmt.id)) : null;
           yield { type: 'data', nodeId: stmt.id, name: 'return', value, snapshot: env.visibleValues() };
-          return { kind: 'return', value };
+          return { kind: 'return', value, nodeId: stmt.id };
         }
         case 'Break':
           if (!context.inLoop) throw new Error('SyntaxError: break вне цикла');
@@ -436,6 +436,9 @@ class MiniPythonRuntime {
     }
     yield { type: 'call', from: callNodeId, to: node.id, name: node.name, args };
     const signal = yield* this.executeBlock(node.body, local, { inLoop: false, functionName: node.name });
+    if (signal?.kind === 'return') {
+      yield { type: 'return', from: signal.nodeId, to: callNodeId, value: signal.value };
+    }
     return signal?.kind === 'return' ? signal.value : null;
   }
 
@@ -644,6 +647,9 @@ function renderGraph(data) {
     if (!list.includes(edge.label)) list.push(edge.label);
     outgoing.set(edge.from, list);
   }
+  for (const node of data.nodes) {
+    if (node.type === 'Return') outgoing.set(node.id, ['Return']);
+  }
   outgoing.forEach((labels, nodeId) => {
     const el = nodeElements.get(nodeId);
     labels.forEach((label, index) => {
@@ -843,17 +849,19 @@ function dataTypeOf(value) {
 
 function findEdge(fromId, toId, label = null, createDataEdge = false) {
   let edge = staticEdges.find((item) => item.from === fromId && item.to === toId &&
-    (createDataEdge ? item.kind.includes('data') : (!label || item.label === label)));
+    (createDataEdge ? item.kind.includes('data') && (!label || item.label === label) : (!label || item.label === label)));
   if (!edge && createDataEdge && nodeLayout.has(fromId) && nodeLayout.has(toId)) {
-    edge = { from: fromId, to: toId, kind: 'data unknown', label: 'Value', id: `${fromId}:Value:${toId}` };
+    const portLabel = label || 'Value';
+    edge = { from: fromId, to: toId, kind: 'data unknown', label: portLabel, id: `${fromId}:${portLabel}:${toId}` };
     staticEdges.push(edge);
     const source = nodeElements.get(fromId);
-    if (source && !source.querySelector('[data-port="Value"]')) {
+    if (source && ![...source.querySelectorAll('.output-port')].some(port => port.dataset.port === portLabel)) {
       const port = document.createElement('div');
       port.className = 'node-port output-port port-value';
-      port.dataset.port = 'Value';
+      port.dataset.port = portLabel;
       port.style.setProperty('--port-y', '50%');
-      port.innerHTML = '<span>Value</span><i></i>';
+      port.innerHTML = '<span></span><i></i>';
+      port.querySelector('span').textContent = portLabel;
       source.append(port);
       const outputs = source.querySelectorAll('.output-port');
       outputs.forEach((output, index) => output.style.setProperty('--port-y', `${(index + 1) / (outputs.length + 1) * 100}%`));
@@ -890,9 +898,9 @@ function animateEdge(edge, { value = '', dataType = 'unknown', execution = false
   requestAnimationFrame(tick);
 }
 
-function animateToken(fromId, toId, value, label = '') {
+function animateToken(fromId, toId, value, label = '', portLabel = 'Value') {
   const type = dataTypeOf(value);
-  const edge = findEdge(fromId, toId, null, true);
+  const edge = findEdge(fromId, toId, portLabel, true);
   if (edge?.kind.includes('data') && !edge.kind.includes(type)) {
     edge.kind = `data ${type}`;
     drawEdges(staticEdges);
@@ -935,6 +943,9 @@ function handleEvent(event) {
     case 'call':
       animateToken(event.from, event.to, event.args, event.name);
       recordNode(event.to, { kind: 'call', label: `вызов ${event.name}(${event.args.map(a => shortValue(a, 12)).join(', ')})` });
+      break;
+    case 'return':
+      animateToken(event.from, event.to, event.value, 'return', 'Return');
       break;
   }
 }

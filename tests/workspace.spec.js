@@ -6,8 +6,9 @@ const starter = readFileSync('app.js', 'utf8').match(/const STARTER_CODE = `([\s
 const simple = 'x = 1\ny = 2\nprint(x + y)';
 const loop = 'total = 0\nfor i in range(4):\n    total += i\nprint(total)';
 const input = 'name = input("Name: ")\nprint(name)';
+const returns = 'def greet(name):\n    return "Hello, " + name\ndef relay(name):\n    return greet(name)\nmessage = relay("Ada")\nprint(message)';
 const fixtures = {};
-for (const source of [starter, simple, loop, input, 'broken =', '']) {
+for (const source of [starter, simple, loop, input, returns, 'broken =', '']) {
   const result = spawnSync('python', ['-c', 'import sys; from engine import parse_program; print(parse_program(sys.stdin.read()))'],
     { input: source, encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
   if (result.status !== 0) throw new Error(result.stderr);
@@ -134,6 +135,37 @@ test('Python file import and download', async ({ page }) => {
   const download = await downloadEvent;
   expect(download.suggestedFilename()).toBe('program.py');
   expect(readFileSync(await download.path(), 'utf8')).toBe(simple);
+});
+
+test('nested returns send their result from the right port to the actual caller', async ({ page }) => {
+  await setCode(page, returns);
+  await expect(page.locator('.kind-return .output-port[data-port="Return"]')).toHaveCount(2);
+  await page.locator('#clearConsoleBtn').click();
+  await page.locator('#speedRange').fill('120');
+  await page.locator('#runBtn').click();
+  await expect(page.locator('#consoleOutput')).toContainText('Выполнение завершено');
+  await expect(page.locator('.console-line').last()).toHaveText('Hello, Ada');
+  const connections = await page.evaluate(() => staticEdges.filter(edge => edge.label === 'Return').map(edge => {
+    const from = parsed.nodes.find(node => node.id === edge.from);
+    const to = parsed.nodes.find(node => node.id === edge.to);
+    const sourceNode = nodeElements.get(edge.from);
+    const socket = sourceNode.querySelector('.output-port[data-port="Return"] i').getBoundingClientRect();
+    const path = edgePaths.get(edge.id);
+    const start = path.getPointAtLength(0).matrixTransform(path.getScreenCTM());
+    const target = nodeElements.get(edge.to).querySelector('.input-port i').getBoundingClientRect();
+    const end = path.getPointAtLength(path.getTotalLength()).matrixTransform(path.getScreenCTM());
+    return { from: from.line, to: to.line, kind: edge.kind,
+      right: socket.left > sourceNode.getBoundingClientRect().right,
+      startError: Math.hypot(start.x - socket.left - socket.width / 2, start.y - socket.top - socket.height / 2),
+      endError: Math.hypot(end.x - target.left - target.width / 2, end.y - target.top - target.height / 2) };
+  }));
+  expect(connections.map(edge => [edge.from, edge.to])).toEqual([[2, 4], [4, 5]]);
+  for (const connection of connections) {
+    expect(connection.kind).toContain('string');
+    expect(connection.right).toBe(true);
+    expect(connection.startError).toBeLessThan(.8);
+    expect(connection.endError).toBeLessThan(.8);
+  }
 });
 
 test('horizontal default, legacy layout migration and port-anchored edges at any zoom', async ({ page }) => {
