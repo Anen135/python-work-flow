@@ -10,6 +10,7 @@ const ui = {
   consoleOutput: $('#consoleOutput'), inputForm: $('#inputForm'), inputPrompt: $('#inputPrompt'), inputField: $('#inputField'), clearConsoleBtn: $('#clearConsoleBtn'),
   inspector: $('#inspector'), inspectorTitle: $('#inspectorTitle'), inspectorCode: $('#inspectorCode'), inspectorState: $('#inspectorState'), inspectorHistory: $('#inspectorHistory'), closeInspector: $('#closeInspector'),
   helpBtn: $('#helpBtn'), helpDialog: $('#helpDialog'),
+  appShell: $('.app-shell'), workspace: $('.workspace'), workspaceSplitter: $('#workspaceSplitter'), consoleSplitter: $('#consoleSplitter'),
 };
 
 const STARTER_CODE = `name = input("Как тебя зовут? ")
@@ -65,6 +66,12 @@ let nodeLayout = new Map();
 let nodeHistory = new Map();
 let lastNodeState = new Map();
 let selectedNodeId = null;
+let staticEdges = [];
+let edgePaths = new Map();
+let selectedEdgeId = null;
+let lastExecutedNodeId = null;
+let animationSequence = 0;
+let executionVersion = 0;
 
 function safeText(value) {
   if (value === null || value === undefined) return 'None';
@@ -107,10 +114,10 @@ function setEngineStatus(text, state = 'loading') {
 }
 
 function setControls(enabled) {
-  ui.runBtn.disabled = !enabled;
-  ui.stepBtn.disabled = !enabled;
+  ui.runBtn.disabled = !enabled || waitingForInput;
+  ui.stepBtn.disabled = !enabled || waitingForInput;
   ui.resetBtn.disabled = !enabled;
-  ui.jumpBtn.disabled = !enabled;
+  ui.jumpBtn.disabled = !enabled || waitingForInput;
   ui.pauseBtn.disabled = !isRunning;
 }
 
@@ -535,26 +542,28 @@ function flattenNodeIndex(nodes) {
 
 function buildStaticEdges(program) {
   const edges = [];
-  const add = (from, to, kind = 'normal', label = '') => { if (from && to) edges.push({ from, to, kind, label }); };
+  const add = (from, to, kind = 'normal', label = 'Next') => {
+    if (from && to) edges.push({ from, to, kind, label, id: `${from}:${label || 'Next'}:${to}` });
+  };
 
   function walkBlock(stmts, continuation = null) {
     stmts.forEach((stmt, index) => {
       const next = stmts[index + 1]?.id ?? continuation;
       if (stmt.type === 'If') {
-        add(stmt.id, stmt.body[0]?.id ?? next, 'branch', 'да');
-        add(stmt.id, stmt.orelse[0]?.id ?? next, 'branch', 'нет');
+        add(stmt.id, stmt.body[0]?.id ?? next, 'branch true', 'True');
+        add(stmt.id, stmt.orelse[0]?.id ?? next, 'branch false', 'False');
         walkBlock(stmt.body, next);
         walkBlock(stmt.orelse, next);
       } else if (stmt.type === 'While' || stmt.type === 'For') {
-        add(stmt.id, stmt.body[0]?.id, 'loop', 'цикл');
-        add(stmt.id, next, 'branch', 'выход');
+        add(stmt.id, stmt.body[0]?.id, 'loop', 'Loop Body');
+        add(stmt.id, next, 'branch completed', 'Completed');
         walkBlock(stmt.body, stmt.id);
       } else if (stmt.type === 'FunctionDef') {
-        add(stmt.id, next, 'normal', '');
-        add(stmt.id, stmt.body[0]?.id, 'branch', 'тело');
+        add(stmt.id, next, 'normal', 'Next');
+        add(stmt.id, stmt.body[0]?.id, 'branch', 'Call');
         walkBlock(stmt.body, null);
       } else if (stmt.type !== 'Return' && stmt.type !== 'Break' && stmt.type !== 'Continue') {
-        add(stmt.id, next, 'normal', '');
+        add(stmt.id, next, 'normal', 'Next');
       }
     });
   }
@@ -563,6 +572,7 @@ function buildStaticEdges(program) {
 }
 
 function renderGraph(data) {
+  const previousPositions = new Map([...nodeLayout].map(([id, box]) => [id, { ...box }]));
   ui.nodesLayer.innerHTML = '';
   ui.edgeLayer.innerHTML = '';
   ui.tokensLayer.innerHTML = '';
@@ -571,21 +581,28 @@ function renderGraph(data) {
   nodeHistory.clear();
   lastNodeState.clear();
   selectedNodeId = null;
+  staticEdges = [];
+  edgePaths.clear();
+  selectedEdgeId = null;
+  ui.inspector.classList.remove('open');
+  ui.inspector.setAttribute('aria-hidden', 'true');
 
   if (!data?.nodes?.length) {
     ui.emptyGraph.classList.remove('hidden');
+    updateGraphBounds();
+    if (typeof graphRebuilt === 'function') graphRebuilt();
     return;
   }
   ui.emptyGraph.classList.add('hidden');
 
-  const xStep = 300;
-  const yStep = 112;
+  const xStep = 350;
+  const rowGap = 54;
   let maxDepth = 0;
+  let nextY = 32;
   data.nodes.forEach((node, index) => {
     maxDepth = Math.max(maxDepth, node.depth);
     const x = 42 + node.depth * xStep;
-    const y = 32 + index * yStep;
-    nodeLayout.set(node.id, { x, y, width: 270, height: 84 });
+    const y = nextY;
 
     const el = document.createElement('article');
     el.className = `code-node kind-${node.kind}`;
@@ -593,6 +610,7 @@ function renderGraph(data) {
     el.style.left = `${x}px`;
     el.style.top = `${y}px`;
     el.innerHTML = `
+      <div class="node-port input-port" data-port="Exec"><i></i><span>Exec</span></div>
       <div class="node-top"><span class="node-kind">${node.kind}</span><span class="node-line">стр. ${node.line}</span></div>
       <div class="node-body">
         <div class="node-label"></div>
@@ -601,42 +619,160 @@ function renderGraph(data) {
       </div>`;
     el.querySelector('.node-label').textContent = node.label;
     el.querySelector('.node-scope').textContent = node.scope === 'module' ? 'глобальная область' : `функция ${node.scope}()`;
-    el.addEventListener('click', () => openInspector(node.id));
+    el.tabIndex = 0;
+    el.setAttribute('aria-label', `Строка ${node.line}: ${node.code}`);
+    el.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        selectGraphNode(node.id, event.shiftKey);
+        if (!event.shiftKey) openInspector(node.id);
+      }
+    });
+    el.addEventListener('click', (event) => {
+      selectGraphNode(node.id, event.shiftKey);
+      if (!event.shiftKey) openInspector(node.id);
+    });
     ui.nodesLayer.append(el);
     nodeElements.set(node.id, el);
+    const width = el.offsetWidth;
+    const height = el.offsetHeight;
+    nodeLayout.set(node.id, { x, y, width, height });
+    nextY += height + rowGap;
+    installNodeDrag(el, node.id);
   });
 
-  const stageWidth = Math.max(720, 42 + maxDepth * xStep + 340);
-  const stageHeight = Math.max(560, 50 + data.nodes.length * yStep + 80);
-  ui.graphStage.style.width = `${stageWidth}px`;
-  ui.graphStage.style.height = `${stageHeight}px`;
-  ui.edgeLayer.setAttribute('viewBox', `0 0 ${stageWidth} ${stageHeight}`);
-  ui.edgeLayer.setAttribute('width', stageWidth);
-  ui.edgeLayer.setAttribute('height', stageHeight);
-  drawEdges(buildStaticEdges(data.program));
+  staticEdges = buildStaticEdges(data.program);
+  const outgoing = new Map();
+  for (const edge of staticEdges) {
+    const list = outgoing.get(edge.from) ?? [];
+    if (!list.includes(edge.label)) list.push(edge.label);
+    outgoing.set(edge.from, list);
+  }
+  outgoing.forEach((labels, nodeId) => {
+    const el = nodeElements.get(nodeId);
+    labels.forEach((label, index) => {
+      const port = document.createElement('div');
+      port.className = `node-port output-port port-${label.toLowerCase().replace(/\s+/g, '-')}`;
+      port.dataset.port = label;
+      port.style.setProperty('--port-y', `${((index + 1) / (labels.length + 1)) * 100}%`);
+      port.innerHTML = `<span></span><i></i>`;
+      port.querySelector('span').textContent = label;
+      el.append(port);
+    });
+  });
+  updateGraphBounds(Math.max(720, 42 + maxDepth * xStep + 390), Math.max(560, nextY + 50));
+  drawEdges(staticEdges);
+  if (typeof graphRebuilt === 'function') graphRebuilt(previousPositions);
+}
+
+function updateGraphBounds(minWidth = 720, minHeight = 560) {
+  let width = minWidth, height = minHeight;
+  nodeLayout.forEach((box) => {
+    width = Math.max(width, box.x + box.width + 90);
+    height = Math.max(height, box.y + box.height + 90);
+  });
+  ui.graphStage.style.width = `${Math.ceil(width)}px`;
+  ui.graphStage.style.height = `${Math.ceil(height)}px`;
+  ui.edgeLayer.setAttribute('viewBox', `0 0 ${Math.ceil(width)} ${Math.ceil(height)}`);
+  ui.edgeLayer.setAttribute('width', Math.ceil(width));
+  ui.edgeLayer.setAttribute('height', Math.ceil(height));
 }
 
 function drawEdges(edges) {
   const ns = 'http://www.w3.org/2000/svg';
+  ui.edgeLayer.innerHTML = '';
+  edgePaths.clear();
+  const defs = document.createElementNS(ns, 'defs');
+  defs.innerHTML = '<marker id="edgeArrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L8 4L0 8z" class="edge-arrow"/></marker>';
+  ui.edgeLayer.append(defs);
   for (const edge of edges) {
     const a = nodeLayout.get(edge.from), b = nodeLayout.get(edge.to);
     if (!a || !b) continue;
-    const sx = a.x + a.width / 2, sy = a.y + a.height;
-    const tx = b.x + b.width / 2, ty = b.y;
-    const midY = sy + (ty - sy) * .5;
+    const siblings = edges.filter((item) => item.from === edge.from);
+    const portIndex = Math.max(0, siblings.findIndex((item) => item.id === edge.id));
+    const sx = a.x + a.width, sy = a.y + a.height * ((portIndex + 1) / (siblings.length + 1));
+    const tx = b.x, ty = b.y + b.height / 2;
+    const dx = tx - sx;
+    const offset = Math.min(220, Math.max(42, Math.abs(dx) * .5));
+    const c1x = sx + offset;
+    const c2x = dx >= 0 ? tx - offset : tx + offset;
+    const d = `M ${sx} ${sy} C ${c1x} ${sy}, ${c2x} ${ty}, ${tx} ${ty}`;
+    const hit = document.createElementNS(ns, 'path');
+    hit.setAttribute('d', d);
+    hit.setAttribute('class', 'flow-edge-hit');
+    hit.dataset.edgeId = edge.id;
     const path = document.createElementNS(ns, 'path');
-    path.setAttribute('d', `M ${sx} ${sy} C ${sx} ${midY}, ${tx} ${midY}, ${tx} ${ty}`);
-    path.setAttribute('class', `flow-edge ${edge.kind}`);
+    path.setAttribute('d', d);
+    path.setAttribute('class', `flow-edge ${edge.kind}${selectedEdgeId === edge.id ? ' selected' : ''}`);
+    path.dataset.edgeId = edge.id;
+    path.setAttribute('marker-end', 'url(#edgeArrow)');
+    hit.addEventListener('click', () => { selectedEdgeId = edge.id; drawEdges(staticEdges); });
+    ui.edgeLayer.append(hit);
     ui.edgeLayer.append(path);
-    if (edge.label) {
-      const text = document.createElementNS(ns, 'text');
-      text.textContent = edge.label;
-      text.setAttribute('x', (sx + tx) / 2 + 6);
-      text.setAttribute('y', midY - 4);
-      text.setAttribute('class', 'flow-edge-label');
-      ui.edgeLayer.append(text);
-    }
+    edgePaths.set(edge.id, path);
   }
+}
+
+function installNodeDrag(el, nodeId) {
+  let drag = null;
+  el.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    if (event.shiftKey) return;
+    if (!graphSelection.has(nodeId)) selectGraphNode(nodeId);
+    ui.graphScroll.focus({ preventScroll: true });
+    const positions = snapshotLayout();
+    const box = nodeLayout.get(nodeId);
+    drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: box.x, y: box.y, moved: false, positions };
+    el.setPointerCapture(event.pointerId);
+    el.classList.add('dragging');
+  });
+  el.addEventListener('pointermove', (event) => {
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    let dx = (event.clientX - drag.startX) / graphZoom, dy = (event.clientY - drag.startY) / graphZoom;
+    if (Math.hypot(dx, dy) > 3) drag.moved = true;
+    if (!drag.moved) return;
+    if ($('#snapGrid').checked) {
+      dx = Math.round((drag.x + dx) / 22) * 22 - drag.x;
+      dy = Math.round((drag.y + dy) / 22) * 22 - drag.y;
+    }
+    moveGraphSelection(drag.positions, dx, dy);
+  });
+  const finish = (event) => {
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    el.releasePointerCapture(event.pointerId);
+    el.classList.remove('dragging');
+    if (drag.moved) {
+      commitLayout(drag.positions);
+      el.dataset.justDragged = 'true';
+      updateGraphBounds();
+      drawEdges(staticEdges);
+    }
+    drag = null;
+  };
+  el.addEventListener('pointerup', finish);
+  el.addEventListener('pointercancel', finish);
+  el.addEventListener('click', (event) => {
+    if (el.dataset.justDragged) {
+      delete el.dataset.justDragged;
+      event.stopImmediatePropagation();
+    }
+  }, true);
+}
+
+function separateOverlappingNode(nodeId) {
+  const box = nodeLayout.get(nodeId);
+  if (!box) return;
+  for (let pass = 0; pass < nodeLayout.size; pass++) {
+    const collision = [...nodeLayout.entries()].find(([id, other]) => id !== nodeId &&
+      box.x < other.x + other.width + 16 && box.x + box.width + 16 > other.x &&
+      box.y < other.y + other.height + 16 && box.y + box.height + 16 > other.y);
+    if (!collision) break;
+    const other = collision[1];
+    box.y = other.y + other.height + 24;
+  }
+  const el = nodeElements.get(nodeId);
+  el.style.left = `${box.x}px`;
+  el.style.top = `${box.y}px`;
 }
 
 function recordNode(nodeId, record) {
@@ -659,6 +795,12 @@ function updateNodeChip(nodeId, label, value) {
   chip.textContent = `${label}: ${shortValue(value)}`;
   runtimeBox.append(chip);
   el.classList.add('done');
+  const box = nodeLayout.get(nodeId);
+  if (box) {
+    box.height = el.offsetHeight;
+    updateGraphBounds();
+    drawEdges(staticEdges);
+  }
 }
 
 function markCurrentNode(nodeId) {
@@ -666,7 +808,7 @@ function markCurrentNode(nodeId) {
   const el = nodeElements.get(nodeId);
   if (el) {
     el.classList.add('active');
-    if (!fastMode) el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    if (!fastMode && $('#followNode')?.checked && typeof focusGraphNode === 'function') focusGraphNode(nodeId);
   }
 }
 
@@ -677,38 +819,83 @@ function markEditorLine(line) {
   if (!fastMode) editor.scrollToLine(line, true, true, () => {});
 }
 
-function animateToken(fromId, toId, text) {
-  if (fastMode) return;
-  const to = nodeLayout.get(toId);
-  if (!to) return;
-  const from = nodeLayout.get(fromId);
-  const token = document.createElement('div');
-  token.className = 'data-token';
-  token.textContent = text;
-  const sx = from ? from.x + from.width / 2 : Math.max(12, to.x - 70);
-  const sy = from ? from.y + from.height / 2 : to.y + to.height / 2;
-  const tx = to.x + to.width / 2;
-  const ty = to.y + to.height / 2;
-  token.style.left = `${sx}px`;
-  token.style.top = `${sy}px`;
-  ui.tokensLayer.append(token);
-  const duration = Math.max(280, Number(ui.speedRange.value) * .7);
-  token.animate([
-    { left: `${sx}px`, top: `${sy}px`, opacity: .1, transform: 'translate(-50%,-50%) scale(.7)' },
-    { opacity: 1, offset: .22 },
-    { left: `${tx}px`, top: `${ty}px`, opacity: 1, transform: 'translate(-50%,-50%) scale(1)' },
-    { opacity: 0, transform: 'translate(-50%,-50%) scale(.85)' },
-  ], { duration, easing: 'cubic-bezier(.2,.8,.2,1)' }).finished.finally(() => token.remove());
+function dataTypeOf(value) {
+  if (Array.isArray(value)) return 'list';
+  if (value === null || value === undefined) return 'unknown';
+  if (typeof value === 'number') return Number.isInteger(value) ? 'int' : 'float';
+  if (typeof value === 'string' || typeof value === 'boolean') return typeof value;
+  return typeof value === 'object' ? 'object' : 'unknown';
+}
+
+function findEdge(fromId, toId, label = null, createDataEdge = false) {
+  let edge = staticEdges.find((item) => item.from === fromId && item.to === toId &&
+    (createDataEdge ? item.kind.includes('data') : (!label || item.label === label)));
+  if (!edge && createDataEdge && nodeLayout.has(fromId) && nodeLayout.has(toId)) {
+    edge = { from: fromId, to: toId, kind: 'data unknown', label: 'Value', id: `${fromId}:Value:${toId}` };
+    staticEdges.push(edge);
+    const source = nodeElements.get(fromId);
+    if (source && !source.querySelector('[data-port="Value"]')) {
+      const port = document.createElement('div');
+      port.className = 'node-port output-port port-value';
+      port.dataset.port = 'Value';
+      port.style.setProperty('--port-y', '50%');
+      port.innerHTML = '<span>Value</span><i></i>';
+      source.append(port);
+    }
+    drawEdges(staticEdges);
+  }
+  return edge;
+}
+
+function animateEdge(edge, { value = '', dataType = 'unknown', execution = false } = {}) {
+  if (!edge || fastMode || !edgePaths.has(edge.id)) return;
+  edgePaths.get(edge.id).classList.add('active-edge');
+  const packet = document.createElement('div');
+  const duration = Math.max(160, Math.min(650, Number(ui.speedRange.value) * .82));
+  packet.className = execution || duration < 180 ? 'edge-pulse' : `data-token type-${dataType}`;
+  if (!execution && duration >= 180) packet.textContent = shortValue(value, 18);
+  packet.dataset.animationId = String(++animationSequence);
+  ui.tokensLayer.append(packet);
+  const startedAt = performance.now();
+  const tick = (now) => {
+    const path = edgePaths.get(edge.id);
+    if (!path || !packet.isConnected) return;
+    const progress = Math.min(1, (now - startedAt) / duration);
+    const point = path.getPointAtLength(progress * path.getTotalLength());
+    packet.style.left = `${point.x}px`;
+    packet.style.top = `${point.y}px`;
+    packet.style.opacity = String(Math.min(1, progress * 7, (1 - progress) * 7));
+    if (progress < 1) requestAnimationFrame(tick);
+    else {
+      packet.remove();
+      window.setTimeout(() => edgePaths.get(edge.id)?.classList.remove('active-edge'), 420);
+    }
+  };
+  requestAnimationFrame(tick);
+}
+
+function animateToken(fromId, toId, value, label = '') {
+  const type = dataTypeOf(value);
+  const edge = findEdge(fromId, toId, null, true);
+  if (edge?.kind.includes('data') && !edge.kind.includes(type)) {
+    edge.kind = `data ${type}`;
+    drawEdges(staticEdges);
+  }
+  animateEdge(edge, { value: label ? `${label}=${shortValue(value, 16)}` : value, dataType: type });
 }
 
 function handleEvent(event) {
   if (!event) return;
   switch (event.type) {
     case 'line':
+      if (lastExecutedNodeId && lastExecutedNodeId !== event.nodeId) {
+        animateEdge(findEdge(lastExecutedNodeId, event.nodeId), { execution: true });
+      }
       currentLineEvent = event;
+      lastExecutedNodeId = event.nodeId;
       markCurrentNode(event.nodeId);
       markEditorLine(event.line);
-      for (const ref of event.refs ?? []) animateToken(ref.from, event.nodeId, `${ref.name}=${shortValue(ref.value, 16)}`);
+      for (const ref of event.refs ?? []) animateToken(ref.from, event.nodeId, ref.value, ref.name);
       recordNode(event.nodeId, { kind: 'line', label: `вход: стр. ${event.line}`, snapshot: event.snapshot });
       break;
     case 'data':
@@ -717,6 +904,11 @@ function handleEvent(event) {
       break;
     case 'decision':
       updateNodeChip(event.nodeId, event.label || 'условие', event.value);
+      {
+        const labels = event.value ? ['True', 'Loop Body'] : ['False', 'Completed'];
+        const edge = staticEdges.find((item) => item.from === event.nodeId && labels.includes(item.label));
+        animateEdge(edge, { execution: true });
+      }
       recordNode(event.nodeId, { kind: 'decision', label: `${event.label || 'условие'} → ${event.value}`, snapshot: event.snapshot });
       break;
     case 'output':
@@ -725,7 +917,7 @@ function handleEvent(event) {
       recordNode(event.nodeId, { kind: 'output', label: `print → ${event.text}` });
       break;
     case 'call':
-      animateToken(event.from, event.to, `${event.name}(…)`);
+      animateToken(event.from, event.to, event.args, event.name);
       recordNode(event.to, { kind: 'call', label: `вызов ${event.name}(${event.args.map(a => shortValue(a, 12)).join(', ')})` });
       break;
   }
@@ -744,6 +936,7 @@ async function pumpToNextPause(inputValue = undefined) {
       }
       if (event.type === 'input') {
         waitingForInput = true;
+        setControls(Boolean(parsed?.ok));
         ui.inputPrompt.textContent = event.prompt || 'Введите значение:';
         ui.inputForm.classList.remove('hidden');
         ui.inputField.value = '';
@@ -767,6 +960,7 @@ function finishExecution() {
   isRunning = false;
   waitingForInput = false;
   currentLineEvent = null;
+  lastExecutedNodeId = null;
   ui.pauseBtn.disabled = true;
   ui.runBtn.textContent = '▶ Снова';
   addConsole('✓ Выполнение завершено.', 'console-system');
@@ -786,6 +980,8 @@ function handleRuntimeError(error) {
 }
 
 async function resetRuntime({ clear = true, prime = true } = {}) {
+  executionVersion++;
+  ui.tokensLayer.replaceChildren();
   isRunning = false;
   waitingForInput = false;
   resumeRunAfterInput = false;
@@ -797,11 +993,16 @@ async function resetRuntime({ clear = true, prime = true } = {}) {
     el.querySelector('.node-runtime').innerHTML = '<span class="value-chip" style="opacity:.38">runtime: —</span>';
   });
   nodeHistory.clear(); lastNodeState.clear();
+  nodeElements.forEach((el, id) => { nodeLayout.get(id).height = el.offsetHeight; });
+  updateGraphBounds();
+  drawEdges(staticEdges);
+  if (selectedNodeId) refreshInspector(selectedNodeId);
   if (clear) clearConsole('Среда сброшена. Выполнение начнётся с первой строки.');
   if (!parsed?.ok) return;
   runtime = new MiniPythonRuntime(parsed.program, flattenNodeIndex(parsed.nodes));
   iterator = runtime.run();
   currentLineEvent = null;
+  lastExecutedNodeId = null;
   if (prime) await pumpToNextPause();
   setControls(true);
 }
@@ -813,9 +1014,11 @@ async function stepOnce() {
 }
 
 async function runLoop() {
+  if (isRunning) return;
   if (!parsed?.ok || waitingForInput) return;
   if (!iterator || !currentLineEvent) await resetRuntime({ clear: true, prime: true });
   isRunning = true;
+  const version = ++executionVersion;
   ui.runBtn.textContent = '▶ Выполняется';
   setControls(true);
   ui.runBtn.disabled = true;
@@ -823,11 +1026,12 @@ async function runLoop() {
   ui.jumpBtn.disabled = true;
   while (isRunning && iterator && currentLineEvent) {
     await sleep(Number(ui.speedRange.value));
-    if (!isRunning) break;
+    if (!isRunning || version !== executionVersion) return;
     const state = await pumpToNextPause();
     if (state === 'input') {
       resumeRunAfterInput = true;
       isRunning = false;
+      ui.pauseBtn.disabled = true;
       break;
     }
     if (state === 'done' || state === 'error') break;
@@ -836,6 +1040,7 @@ async function runLoop() {
 }
 
 function pauseRun() {
+  executionVersion++;
   isRunning = false;
   ui.runBtn.textContent = '▶ Продолжить';
   setControls(Boolean(parsed?.ok));
@@ -951,6 +1156,13 @@ async function init() {
 }
 
 editor.session.on('change', () => {
+  pauseRun();
+  iterator = null;
+  currentLineEvent = null;
+  waitingForInput = false;
+  resumeRunAfterInput = false;
+  ui.inputForm.classList.add('hidden');
+  setControls(false);
   clearTimeout(parseTimer);
   parseTimer = setTimeout(parseEditorCode, 420);
 });
@@ -968,6 +1180,77 @@ ui.clearConsoleBtn.addEventListener('click', () => clearConsole('Консоль 
 ui.helpBtn.addEventListener('click', () => ui.helpDialog.showModal());
 ui.closeInspector.addEventListener('click', () => { ui.inspector.classList.remove('open'); ui.inspector.setAttribute('aria-hidden','true'); selectedNodeId = null; });
 
+function installSplitter(splitter, orientation) {
+  let active = false;
+  const apply = (event) => {
+    if (!active) return;
+    if (orientation === 'vertical') {
+      const rect = ui.workspace.getBoundingClientRect();
+      const percent = Math.max(24, Math.min(72, ((event.clientX - rect.left) / rect.width) * 100));
+      ui.appShell.style.setProperty('--editor-ratio', `${percent}%`);
+    } else {
+      const rect = ui.appShell.getBoundingClientRect();
+      const height = Math.max(120, Math.min(rect.height * .62, rect.bottom - event.clientY - 18));
+      ui.appShell.style.setProperty('--console-height', `${height}px`);
+    }
+    editor.resize();
+  };
+  splitter.addEventListener('pointerdown', (event) => {
+    active = true;
+    splitter.setPointerCapture(event.pointerId);
+    splitter.classList.add('dragging');
+    document.body.classList.add('is-resizing');
+    document.body.classList.toggle('horizontal', orientation === 'horizontal');
+    event.preventDefault();
+  });
+  splitter.addEventListener('pointermove', apply);
+  const finish = (event) => {
+    if (!active) return;
+    active = false;
+    splitter.releasePointerCapture(event.pointerId);
+    splitter.classList.remove('dragging');
+    document.body.classList.remove('is-resizing', 'horizontal');
+  };
+  splitter.addEventListener('pointerup', finish);
+  splitter.addEventListener('pointercancel', finish);
+  splitter.addEventListener('keydown', (event) => {
+    const key = orientation === 'vertical' ? (event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0) : (event.key === 'ArrowUp' ? 1 : event.key === 'ArrowDown' ? -1 : 0);
+    if (!key) return;
+    const prop = orientation === 'vertical' ? '--editor-ratio' : '--console-height';
+    const current = parseFloat(getComputedStyle(ui.appShell).getPropertyValue(prop));
+    const step = orientation === 'vertical' ? 2 : 20;
+    ui.appShell.style.setProperty(prop, `${current + key * step}${orientation === 'vertical' ? '%' : 'px'}`);
+    editor.resize();
+    event.preventDefault();
+  });
+}
+
+installSplitter(ui.workspaceSplitter, 'vertical');
+installSplitter(ui.consoleSplitter, 'horizontal');
+
+document.querySelectorAll('.panel-expand').forEach((button) => {
+  button.addEventListener('click', () => {
+    const panel = button.closest('.panel, .console-panel');
+    const opening = !panel.classList.contains('is-fullscreen');
+    document.querySelectorAll('.is-fullscreen').forEach((item) => item.classList.remove('is-fullscreen'));
+    panel.classList.toggle('is-fullscreen', opening);
+    button.textContent = opening ? '×' : '⛶';
+    button.setAttribute('aria-label', opening ? 'Выйти из полноэкранного режима' : 'Развернуть окно');
+    requestAnimationFrame(() => editor.resize());
+  });
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  const panel = document.querySelector('.is-fullscreen');
+  if (!panel) return;
+  panel.classList.remove('is-fullscreen');
+  const button = panel.querySelector('.panel-expand');
+  button.textContent = '⛶';
+  button.setAttribute('aria-label', 'Развернуть окно');
+  requestAnimationFrame(() => editor.resize());
+});
+
 ui.inputForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!waitingForInput) return;
@@ -979,6 +1262,5 @@ ui.inputForm.addEventListener('submit', async (event) => {
   resumeRunAfterInput = false;
   const state = await pumpToNextPause(value);
   if (shouldResume && state === 'line') runLoop();
+  else setControls(Boolean(parsed?.ok));
 });
-
-init();

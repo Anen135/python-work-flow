@@ -18,6 +18,10 @@
         </div>
       </div>
       <div class="status-group">
+        <span id="saveStatus" class="save-status" role="status">Локальный проект</span>
+        <button id="openFileBtn" class="btn" title="Открыть Python-файл">Открыть</button>
+        <button id="saveFileBtn" class="btn" title="Скачать код (Ctrl+S)">Скачать .py</button>
+        <input id="fileInput" type="file" accept=".py,.txt" hidden />
         <span id="engineStatus" class="status-pill loading"><span class="status-dot"></span>Загрузка Python…</span>
         <button id="helpBtn" class="icon-btn" title="Что поддерживается">?</button>
       </div>
@@ -49,10 +53,12 @@
             <span class="eyebrow">КОД</span>
             <strong>Редактор</strong>
           </div>
-          <span id="parseBadge" class="mini-badge">AST не собран</span>
+          <div class="panel-actions"><span id="parseBadge" class="mini-badge">AST не собран</span><button class="panel-expand" type="button" title="Развернуть редактор" aria-label="Развернуть редактор">⛶</button></div>
         </div>
         <div id="editor" aria-label="Редактор Python"></div>
       </section>
+
+      <div id="workspaceSplitter" class="splitter splitter-vertical" role="separator" aria-orientation="vertical" aria-label="Изменить ширину редактора и визуализации" tabindex="0"></div>
 
       <section class="panel visualization-panel">
         <div class="panel-header">
@@ -60,13 +66,42 @@
             <span class="eyebrow">ВИЗУАЛИЗАЦИЯ</span>
             <strong>Поток выполнения</strong>
           </div>
-          <div class="legend">
-            <span><i class="legend-dot code"></i>код</span>
-            <span><i class="legend-dot data"></i>данные</span>
-            <span><i class="legend-dot active"></i>сейчас</span>
+          <div class="panel-actions">
+            <div class="legend">
+              <span><i class="legend-dot code"></i>код</span>
+              <span><i class="legend-dot data"></i>данные</span>
+              <span><i class="legend-dot active"></i>сейчас</span>
+            </div>
+            <button class="panel-expand" type="button" title="Развернуть визуализацию" aria-label="Развернуть визуализацию">⛶</button>
           </div>
         </div>
-        <div id="graphScroll" class="graph-scroll">
+        <div class="graph-tools" role="toolbar" aria-label="Инструменты графа">
+          <div class="tool-row">
+            <input id="nodeSearch" type="search" placeholder="Найти ноду или строку…" aria-label="Поиск нод по коду или номеру строки" />
+            <button id="prevNodeBtn" class="tool-btn" title="Предыдущая нода (Alt+↑)">↑</button>
+            <button id="nextNodeBtn" class="tool-btn" title="Следующая нода (Alt+↓)">↓</button>
+            <button id="activeNodeBtn" class="tool-btn" title="К текущему шагу">Текущая</button>
+            <label class="tool-toggle"><input id="followNode" type="checkbox" checked /> Следить</label>
+          </div>
+          <div class="tool-row">
+            <button id="zoomOutBtn" class="tool-btn" aria-label="Уменьшить масштаб">−</button>
+            <button id="zoomResetBtn" class="tool-btn" title="Масштаб 100%">100%</button>
+            <button id="zoomInBtn" class="tool-btn" aria-label="Увеличить масштаб">+</button>
+            <button id="fitGraphBtn" class="tool-btn" title="Вместить граф (F)">Вместить</button>
+            <span class="tool-divider"></span>
+            <select id="alignNodes" aria-label="Выравнивание выделенных нод">
+              <option value="">Выровнять…</option>
+              <option value="left">По левому краю</option><option value="center">По центру X</option><option value="right">По правому краю</option>
+              <option value="top">По верхнему краю</option><option value="middle">По центру Y</option><option value="bottom">По нижнему краю</option>
+              <option value="horizontal">Равные интервалы X</option><option value="vertical">Равные интервалы Y</option>
+            </select>
+            <button id="layoutBtn" class="tool-btn" title="Восстановить расположение по структуре кода">Авто</button>
+            <button id="undoLayoutBtn" class="tool-btn" title="Отменить раскладку (Ctrl+Z на графе)">↶</button>
+            <button id="redoLayoutBtn" class="tool-btn" title="Повторить раскладку (Ctrl+Shift+Z на графе)">↷</button>
+            <label class="tool-toggle"><input id="snapGrid" type="checkbox" /> Сетка</label>
+          </div>
+        </div>
+        <div id="graphScroll" class="graph-scroll" tabindex="0" aria-label="Граф. Shift и клик — выделение, стрелки — перемещение, F — вместить">
           <div id="graphStage" class="graph-stage">
             <svg id="edgeLayer" class="edge-layer" aria-hidden="true"></svg>
             <div id="nodesLayer" class="nodes-layer"></div>
@@ -78,8 +113,11 @@
             </div>
           </div>
         </div>
+        <div class="graph-footer"><span id="graphSummary" role="status">Нет нод</span><span>Shift + клик · выделить несколько · тянуть фон · обзор</span></div>
       </section>
     </main>
+
+    <div id="consoleSplitter" class="splitter splitter-horizontal" role="separator" aria-orientation="horizontal" aria-label="Изменить высоту консоли" tabindex="0"></div>
 
     <section class="console-panel">
       <div class="console-header">
@@ -87,7 +125,7 @@
           <span class="eyebrow">КОНСОЛЬ</span>
           <strong>print() / input()</strong>
         </div>
-        <button id="clearConsoleBtn" class="text-btn">Очистить</button>
+        <div class="panel-actions"><button id="clearConsoleBtn" class="text-btn">Очистить</button><button class="panel-expand" type="button" title="Развернуть консоль" aria-label="Развернуть консоль">⛶</button></div>
       </div>
       <div id="consoleOutput" class="console-output" aria-live="polite">
         <div class="console-system">Готовим среду выполнения…</div>
@@ -118,6 +156,18 @@
   <dialog id="helpDialog" class="help-dialog">
     <form method="dialog"><button class="dialog-close" aria-label="Закрыть">×</button></form>
     <h2>Учебное подмножество Python</h2>
+    <h3>Управление</h3>
+    <div class="shortcut-grid">
+      <span>Запуск / пауза</span><kbd>Ctrl + Enter</kbd><span>Шаг</span><kbd>F10</kbd>
+      <span>Сброс выполнения</span><kbd>Shift + F10</kbd><span>Скачать код</span><kbd>Ctrl + S</kbd>
+      <span>Поиск ноды</span><kbd>Ctrl + K</kbd><span>Предыдущая / следующая</span><kbd>Alt + ↑ / ↓</kbd>
+      <span>Вместить / масштаб 100% (на графе)</span><kbd>F / 0</kbd>
+      <span>Выделить все / отменить выделение (на графе)</span><kbd>Ctrl + A / Esc</kbd>
+      <span>Переместить выделенные ноды</span><kbd>Стрелки · Shift = 10×</kbd>
+      <span>Отменить / повторить раскладку (на графе)</span><kbd>Ctrl + Z / Ctrl + Shift + Z</kbd>
+      <span>Масштаб у курсора</span><kbd>Ctrl + колесо</kbd>
+    </div>
+    <p>Shift + клик добавляет ноду к выделению. Перетаскивайте фон для обзора, ноду — для перемещения выделенной группы. Enter в поиске переключает результаты. На macOS используйте ⌘ вместо Ctrl. Код и расположение нод сохраняются в этом браузере.</p>
     <p>Проект намеренно ограничен темами, которые обычно нужны на первых занятиях.</p>
     <div class="help-grid">
       <div><strong>Поддерживается</strong><p>Переменные, арифметика, списки и словари, if/else, while, for, range(), функции, аргументы, return, print(), input(), len(), int(), float(), str(), bool(), min(), max(), abs(), append().</p></div>
@@ -128,5 +178,6 @@
   <script src="https://cdn.jsdelivr.net/npm/ace-builds@1.44.0/src-min-noconflict/ace.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v314.0.6/full/pyodide.js"></script>
   <script src="app.js"></script>
+  <script src="workspace.js"></script>
 </body>
 </html>

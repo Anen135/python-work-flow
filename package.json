@@ -1,0 +1,15 @@
+{
+  "name": "python-work-flow",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "python -m http.server 8000",
+    "check": "node --check app.js && node --check workspace.js",
+    "test": "playwright test",
+    "test:live": "node scripts/smoke.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "ace-builds": "^1.44.0"
+  }
+}
